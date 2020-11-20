@@ -1,0 +1,61 @@
+Threads
+;;
+A shared variable X (initially equal to zero) is operated on by n concurrent processes P_i (1 <= i <= n and n is even) as follows. Each of the processes P_i (i <= n/2) read x from memory, increment it by one, store it to memory, and then terminate. Each of the remaining processes read x from memory, decrement x by two, store it to memory, and then terminate. 
+Each process before reading X invokes the P operation (i.e., wait) on a counting semaphore S and invoke the V operation (i.e., signal) on the semaphore S after storing x to memory. 
+Semaphore S is initialized to 2.
+What is the maximum possible value of X after all processes complete execution?
+;;
+n/2
+;;
+Suppose 
+P_1 executes and calls P and goes to its CS first and increments X by 1 and before storing the value 
+control is switched over to a process P_j (j > n/2)
+which calls P, decrements and stores, calls V
+and similarly afterwards the control goes to other P_i (n/2 < i <= n)
+which execute similarly
+now the control goes back to P_1 which stores X as 1
+and now P_i (1 < i <= n) execute
+Hence, X value is incremented n/2 times
+;;
+!!
+Scheduling
+;;
+Consider n CPU intensive processes. The OS follows RR scheme. Process switch takes s seconds, what should be the quanta time for the overhead from process switching to be minimized and each process should be guaranteed its turn after every t seconds ?
+;;
+(t - ns)/(n - 1)
+;;
+Suppose the time quanta is q. After a process runs, it has to wait for quantas of (n - 1) processes to end and (n - 1)*s process switch time
+As it enters the second quanta of its burst time
+total time so far after the first quanta: (n - 1) * q + (n - 1) * s + s
+ie . (n - 1) * q + n * s
+
+ATQ. this time should be equal to t
+
+ie. q = (t - n * s)/ (n - 1)
+;;
+!!
+Memory Management
+;;
+A system has 8 pages in its address space but the main memory has a capacity of only 3 frames. Main memory is empty at start. 
+A program visits the pages in order 
+0, 2, 0, 1, 5, 2, 5, 0, 2, 1, 5. 
+How many page faults occur if LRU page replacement algorithm is used?
+;;
+8
+;;
+Page number    Main memory after page visit
+0				[0]									Fault
+2				[0,2]								Fault
+0				[0,2]								
+1				[0,2,1]								Fault
+5				[0,5,1]							  	Fault
+2 				[2,5,1] 							Fault
+5				[2,5,1]
+0				[2,5,0]								Fault
+2				[2,5,0]							
+1				[2,1,0]								Fault
+5				[2,1,5]								Fault
+
+Fault count: 8
+;; 
+!!
