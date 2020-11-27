@@ -6,7 +6,7 @@
 #include <fstream>
 #include <cstdint>
 
-#define MAXREQ 20
+#define MAXREQ 36
 #define MAXQUEUE 5
 
 using namespace std;
@@ -26,13 +26,20 @@ public:
   }
 };
 
+unordered_map<pthread_t, bool> user_reply_map;
+unordered_map<pthread_t, string> requesting_user_map;
+unordered_map<pthread_t, string> common_message_map;
+
+unordered_map<pthread_t, pthread_cond_t> cond_map; 
+pthread_mutex_t mLock = PTHREAD_MUTEX_INITIALIZER; 
+
 unordered_map<string, vector<Question*>> question_bank;
 unordered_map<int, string> fd_user_map;
-unordered_map<string, pthread_t> thread_users;
+unordered_map<string, int> user_fd_map;
+unordered_map<pthread_t, string> thread_users;
+unordered_map<string, pthread_t> user_threads;
 unordered_set<string> active_users;
 unordered_set<string> available_users;
-
-pthread_t reciever;
 
 void sendMessage(int fd, string s)
 {
@@ -42,25 +49,160 @@ void sendMessage(int fd, string s)
   delete[] arr;
 }
 
+void sendMsgToUser(string s, string t)
+{
+  int fd = user_fd_map[t];
+  string sender = thread_users[pthread_self()];
+
+  string res = "FROM " + sender + ": " + s + "\n";
+  sendMessage(fd, res);
+}
+
+string getMsg(string s)
+{
+  string res = "";
+  for (int i = 16; i < s.size(); i++)
+  {
+    if (s[i] == 'X')
+      break;
+    res += s[i];
+  }
+
+  return res;
+}
+
+string getType(string s)
+{
+  string res = "";
+  for (int i = 0; i < 12; i++)
+  {
+    if (s[i] == 'X')
+      break;
+    res += s[i];
+  }
+
+  return res;
+}
+
 void closeSocket(int &fd)
 {
-  string s = fd_user_map[fd];
-  active_users.erase(s);
+  string user = fd_user_map[fd];
+  active_users.erase(user);
+  fd_user_map.erase(fd);
+  user_fd_map.erase(user);
+  thread_users.erase(pthread_self());
+  user_threads.erase(user);
+  available_users.erase(user);
 
-  if (available_users.find(s) != available_users.end())
-    available_users.erase(s);
-
+  string closingMsg = "Socket has been closed.\n";
+  sendMessage(fd, closingMsg);
   close(fd);
   pthread_exit(NULL);
 }
 
-void SIGhandler(int sig)
+void MessageHandler(int sig)
 {
-  // if (pthread_self() == reciever)
-  // {
+  string user = thread_users[pthread_self()];
+  int fd = user_fd_map[user];
 
-  // }
-  cout << "Recieved signal\n";
+  sendMessage(fd, "PRESS ANT KEY");
+}
+
+void CollabHandler(int sig)
+{
+  string user = thread_users[pthread_self()];
+  int fd = user_fd_map[user];
+
+  int n;
+  char reqbuf[MAXREQ];
+
+  string req_usr;
+  while (1)
+  {
+    req_usr = requesting_user_map[pthread_self()];
+    sendMessage(fd, "Wanna Collaborate with " + req_usr +" [y/n]?");
+  
+    memset(reqbuf,0, MAXREQ);
+    n = read(fd, reqbuf, MAXREQ - 1);
+
+    string msg = reqbuf;
+
+    string s = getMsg(msg);
+    string t = getType(msg);
+
+    if (s == "n\n")
+    {
+      user_reply_map[pthread_self()] = 0;
+      pthread_cond_signal(&cond_map[pthread_self()]); 
+      return;
+    }
+    else if (s == "y\n")
+    {
+      user_reply_map[pthread_self()] = 1;
+      pthread_cond_signal(&cond_map[pthread_self()]); 
+      break;
+    }
+    else
+      continue;
+  }
+
+  string temp = "Collaboration Established. Please Wait. To send Message, @user:<msg>\n You cannot give answer directly. Only discuss with " + req_usr;
+  sendMessage(fd, temp);
+
+  
+  while (1)
+  {
+    while (common_message_map[pthread_self()] == "")
+    {
+      memset(reqbuf,0, MAXREQ);
+      n = read(fd, reqbuf, MAXREQ - 1);
+
+      string msg = reqbuf;
+
+      string s = getMsg(msg);
+      string t = getType(msg);
+
+      if (active_users.find(t) != active_users.end())
+      {
+        sendMsgToUser(s, t);
+      }
+
+      if (t == "response" && s == "q")
+        return;
+
+      if (s == "CLOSE")
+        closeSocket(fd);
+    }
+
+    sendMessage(fd, common_message_map[pthread_self()]);
+    common_message_map[pthread_self()] = "";
+    // pthread_cond_signal(&cond_map[pthread_self()]);
+
+    while (common_message_map[pthread_self()] == "")
+    {
+      memset(reqbuf,0, MAXREQ);
+      n = read(fd, reqbuf, MAXREQ - 1);
+      
+      string msg = reqbuf;
+
+      string s = getMsg(msg);
+      string t = getType(msg);
+
+      if (active_users.find(t) != active_users.end())
+      {
+        sendMsgToUser(s, t);
+      }
+
+      if (t == "response" && s == "q")
+        return;
+
+      if (s == "CLOSE")
+        closeSocket(fd);
+    }
+
+    sendMessage(fd, common_message_map[pthread_self()]);
+    common_message_map[pthread_self()] = "";
+  }
 }
 
 bool indivisualMode(int &fd)
@@ -77,7 +219,26 @@ bool indivisualMode(int &fd)
     n = read(fd, reqbuf, MAXREQ - 1);
     Question *ques;
     
-    string s = reqbuf;
+    string msg = reqbuf;
+
+    string s = getMsg(msg);
+    string t = getType(msg);
+
+    while (t != "response")
+    {
+      if (active_users.find(t) != active_users.end())
+      {
+        sendMsgToUser(s, t);
+      }
+
+      memset(reqbuf,0, MAXREQ);
+      n = read(fd, reqbuf, MAXREQ - 1); // user-answer
+
+      msg = reqbuf;
+
+      s = getMsg(msg);
+      t = getType(msg);
+    }
 
     if (s == "CLOSE")
       closeSocket(fd);
@@ -113,6 +274,11 @@ bool indivisualMode(int &fd)
       return 0;
     else if (s == "r\n")
       return 1;
+    else
+    {
+      sendMessage(fd, question_topics);
+      continue;
+    }
 
 
     sendMessage(fd, ques->statement);
@@ -120,13 +286,32 @@ bool indivisualMode(int &fd)
     memset(reqbuf,0, MAXREQ);
     n = read(fd, reqbuf, MAXREQ - 1); // user-answer
 
-    string user_answer = reqbuf;
+    msg = reqbuf;
 
-    if (user_answer == "CLOSE")
+    s = getMsg(msg);
+    t = getType(msg);
+
+    while (t != "response")
+    {
+      if (active_users.find(t) != active_users.end())
+      {
+        sendMsgToUser(s, t);
+      }
+
+      memset(reqbuf,0, MAXREQ);
+      n = read(fd, reqbuf, MAXREQ - 1); // user-answer
+
+      msg = reqbuf;
+
+      s = getMsg(msg);
+      t = getType(msg);
+    }
+
+    if (s == "CLOSE")
       closeSocket(fd);
 
     string response = question_topics;
-    if (user_answer == ques->answer)
+    if (s == ques->answer)
       response = "\nCorrect Answer. Explantion: \n" + ques->explantion + "\n" + response; 
     else
       response = "\nWrong Answer. Explantion: \n" + ques->explantion + "\n" + response;
@@ -151,9 +336,28 @@ bool adminMode(int &fd)
     memset(reqbuf,0, MAXREQ);
     n = read(fd, reqbuf, MAXREQ - 1);
     
-    string s = reqbuf;
+    string msg = reqbuf;
 
-    if (s == "CLOSE\n")
+    string s = getMsg(msg);
+    string t = getType(msg);
+
+    while (t != "response")
+    {
+      if (active_users.find(t) != active_users.end())
+      {
+        sendMsgToUser(s, t);
+      }
+
+      memset(reqbuf,0, MAXREQ);
+      n = read(fd, reqbuf, MAXREQ - 1); // user-answer
+
+      msg = reqbuf;
+
+      s = getMsg(msg);
+      t = getType(msg);
+    }
+
+    if (s == "CLOSE")
       closeSocket(fd);
 
     //////////////////////////
@@ -170,7 +374,10 @@ bool adminMode(int &fd)
     else if (s == "r\n")
       return 1;
     else
+    {
+      sendMessage(fd, welcomeMsg);
       continue;
+    }
 
     questionFile << topicName + "\n;;\n";
 
@@ -181,12 +388,33 @@ bool adminMode(int &fd)
     memset(reqbuf,0, MAXREQ);
     n = read(fd, reqbuf, MAXREQ - 1);
 
-    string statement = reqbuf;
+    msg = reqbuf;
 
-    if (statement == "CLOSE\n")
+    s = getMsg(msg);
+    t = getType(msg);
+
+    while (t != "response")
+    {
+      if (active_users.find(t) != active_users.end())
+      {
+        sendMsgToUser(s, t);
+      }
+
+      memset(reqbuf,0, MAXREQ);
+      n = read(fd, reqbuf, MAXREQ - 1); // user-answer
+
+      msg = reqbuf;
+
+      s = getMsg(msg);
+      t = getType(msg);
+    }
+
+    if (s == "CLOSE")
       closeSocket(fd);
 
-    questionFile << statement + ";;\n";
+    string statement = s;
+
+    questionFile << s + ";;\n";
 
     //////////////////////////
 
@@ -195,12 +423,33 @@ bool adminMode(int &fd)
     memset(reqbuf,0, MAXREQ);
     n = read(fd, reqbuf, MAXREQ - 1);
 
-    string answer = reqbuf;
+    msg = reqbuf;
 
-    if (answer == "CLOSE\n")
+    s = getMsg(msg);
+    t = getType(msg);
+
+    while (t != "response")
+    {
+      if (active_users.find(t) != active_users.end())
+      {
+        sendMsgToUser(s, t);
+      }
+
+      memset(reqbuf,0, MAXREQ);
+      n = read(fd, reqbuf, MAXREQ - 1); // user-answer
+
+      msg = reqbuf;
+
+      s = getMsg(msg);
+      t = getType(msg);
+    }
+
+    if (s == "CLOSE")
       closeSocket(fd);
 
-    questionFile << answer + ";;\n";
+    string answer = s;
+
+    questionFile << s + ";;\n";
 
     //////////////////////////
 
@@ -209,12 +458,34 @@ bool adminMode(int &fd)
     memset(reqbuf,0, MAXREQ);
     n = read(fd, reqbuf, MAXREQ - 1);
 
-    string explantion = reqbuf;
+    msg = reqbuf;
 
-    if (explantion == "CLOSE\n")
+    s = getMsg(msg);
+    t = getType(msg);
+
+
+    while (t != "response")
+    {
+      if (active_users.find(t) != active_users.end())
+      {
+        sendMsgToUser(s, t);
+      }
+
+      memset(reqbuf,0, MAXREQ);
+      n = read(fd, reqbuf, MAXREQ - 1); // user-answer
+
+      msg = reqbuf;
+
+      s = getMsg(msg);
+      t = getType(msg);
+    }
+
+    if (s == "CLOSE")
       closeSocket(fd);
 
-    questionFile << explantion + ";;\n!!\n";
+    string explantion = s;
+
+    questionFile << s + ";;\n!!\n";
 
     //////////////////////////
 
@@ -227,13 +498,19 @@ bool adminMode(int &fd)
 
 bool groupMode(int &fd)
 {
+  if (active_users.size() == 0)
+  {
+    sendMessage(fd, "No active Users.\n");
+    return 1;
+  }
+
   string res = "Active Users are: ";
-  for (auto itr = available_users.begin(); itr != available_users.end(); itr++)
+  for (auto itr = active_users.begin(); itr != active_users.end(); itr++)
   {
     res += *itr + ",";
   }
   res.pop_back();
-  res += "\nSpecify user with whom you want to collaborte.\n";
+  res += "\nSpecify user with whom you want to collaborate.\n";
 
   sendMessage(fd, res);
   
@@ -241,13 +518,168 @@ bool groupMode(int &fd)
   char reqbuf[MAXREQ];
 
   n = read(fd, reqbuf, MAXREQ);
-  string userCollab = reqbuf;
+  
+  string msg = reqbuf;
 
-  if (userCollab == "CLOSE\n")
-    closeSocket(fd);
+  string s = getMsg(msg);
+  string t = getType(msg);
 
-  userCollab.pop_back();
-  pthread_kill( thread_users[userCollab], SIGUSR1 );
+  while (t != "response")
+  {
+    if (active_users.find(t) != active_users.end())
+    {
+      sendMsgToUser(s, t);
+    }
+
+    memset(reqbuf,0, MAXREQ);
+    n = read(fd, reqbuf, MAXREQ - 1); // user-answer
+
+    msg = reqbuf;
+
+    s = getMsg(msg);
+    t = getType(msg);
+  }
+
+  string usr = s.substr(0, s.size() - 1);
+
+  pthread_t other_usr_thread_id = user_threads[usr];
+
+  if (active_users.find(usr) != active_users.end())
+  {
+    // pthread_mutex_mLock(&mLock);
+    requesting_user_map[other_usr_thread_id] = thread_users[pthread_self()];
+    cond_map[other_usr_thread_id] = PTHREAD_COND_INITIALIZER;
+    pthread_kill(user_threads[usr], SIGUSR1);
+    pthread_cond_wait(&cond_map[other_usr_thread_id], &mLock);
+
+    if (!user_reply_map[other_usr_thread_id])
+    {
+      sendMessage(fd, "They Refused to Collaborate.\n");
+      return 1;
+    }
+    else
+    {
+      sendMessage(fd, "Collaboration Established. To send Message, @user:<msg>\n");
+      // pthread_cond_wait(&cond_map[other_usr_thread_id], &mLock);
+    }
+  }
+
+  string question_topics = "1 Threads\n2 Scheduling\n3 Memory Management\nn next question\nq quit\nr main menu\n";
+  
+  sendMessage(fd, question_topics);
+  while(1)
+  {
+    // pthread_cond_signal(&cond_map[other_usr_thread_id]);
+
+    memset(reqbuf,0, MAXREQ);
+    n = read(fd, reqbuf, MAXREQ - 1);
+    Question *ques;
+    
+    string msg = reqbuf;
+
+    string s = getMsg(msg);
+    string t = getType(msg);
+
+    string other_user;
+
+    while (t != "response")
+    {
+      if (active_users.find(t) != active_users.end())
+      {
+        other_user = t;
+        sendMsgToUser(s, t);
+      }
+
+      memset(reqbuf,0, MAXREQ);
+      n = read(fd, reqbuf, MAXREQ - 1); // user-answer
+
+      msg = reqbuf;
+
+      s = getMsg(msg);
+      t = getType(msg);
+    }
+
+    if (s == "CLOSE")
+      closeSocket(fd);
+
+    int rn;
+    if (s == "1\n")
+    {
+      if (question_bank["Threads"].size() == 0)
+        continue;
+      rn = rand() % question_bank["Threads"].size();
+      ques = question_bank["Threads"][rn];
+    }
+    else if (s == "2\n")
+    { 
+      if (question_bank["Scheduling"].size() == 0)
+        continue;
+      rn = rand() % question_bank["Scheduling"].size();
+      ques = question_bank["Scheduling"][rn];
+    }
+    else if (s == "3\n")
+    {
+      if (question_bank["Memory Management"].size() == 0)
+        continue;
+      rn = rand() % question_bank["Memory Management"].size();
+      ques = question_bank["Memory Management"][rn];
+    }
+    else if (s == "n\n")
+    {
+      sendMessage(fd, question_topics);
+      continue;
+    }
+    else if (s == "q\n")
+      return 0;
+    else if (s == "r\n")
+      return 1;
+    else
+    {
+      sendMessage(fd, question_topics);
+      continue;
+    }
+
+    common_message_map[other_usr_thread_id] = ques->statement;
+    sendMessage(fd, ques->statement);
+    pthread_kill(user_threads[usr], SIGUSR2);
+
+    memset(reqbuf,0, MAXREQ);
+    n = read(fd, reqbuf, MAXREQ - 1); // user-answer
+
+    msg = reqbuf;
+
+    s = getMsg(msg);
+    t = getType(msg);
+
+    while (t != "response")
+    {
+      if (active_users.find(t) != active_users.end())
+      {
+        sendMsgToUser(s, t);
+      }
+
+      memset(reqbuf,0, MAXREQ);
+      n = read(fd, reqbuf, MAXREQ - 1); // user-answer
+
+      msg = reqbuf;
+
+      s = getMsg(msg);
+      t = getType(msg);
+    }
+
+    if (s == "CLOSE")
+        closeSocket(fd);
+
+    string response;
+    if (s == ques->answer)
+      response = "\nCorrect Answer. Explantion: \n" + ques->explantion + "\n";
+    else
+      response = "\nWrong Answer. Explantion: \n" + ques->explantion + "\n";
+
+    common_message_map[other_usr_thread_id] = response;
+    sendMessage(fd, response + question_topics);
+    pthread_kill(user_threads[usr], SIGUSR2);
+  }
 
   return 1;
 }
@@ -259,7 +691,7 @@ void* server(void* fd)
   int n;
   char reqbuf[MAXREQ];
 
-  n = read(consockfd, reqbuf, MAXREQ);
+  n = read(consockfd, reqbuf, MAXREQ-1);
   
   string userID = "";
   for (int i = 8; i < 20; i++)
@@ -270,70 +702,67 @@ void* server(void* fd)
   }
 
   fd_user_map[consockfd] = userID;
+  user_fd_map[userID] = consockfd;
   active_users.insert(userID);
   available_users.insert(userID);
-  thread_users[userID] = pthread_self();
+  thread_users[pthread_self()] = userID;
+  user_threads[userID] = pthread_self();
 
-  string instructionMsg = "I Indivisual\nG Group\nA Admin\n";
-  string welcomeMsg = "Welcome " + to_string(pthread_self()) + " to online quiz on OS\n" + instructionMsg;
+
+  string instructionMsg = "I Indivisual\nG Group\nA Admin\nq Quit\n";
+  string welcomeMsg = "Welcome " + userID + " to online quiz on OS\n" + instructionMsg;
   sendMessage(consockfd, welcomeMsg);
 
   while (1)
   {                 
     memset(reqbuf,0, MAXREQ);
-    n = read(consockfd, reqbuf, MAXREQ-1); /* Recv */
-    
-    string s = reqbuf;
+    n = read(consockfd, reqbuf, MAXREQ-1);
+
+    string msg = reqbuf;
+
+    string s = getMsg(msg);
+    string t = getType(msg);
+
+    if (active_users.find(t) != active_users.end())
+    {
+      sendMsgToUser(s, t);
+    }
 
     if (s == "CLOSE\n")
       closeSocket(consockfd);
 
-    if (s == "I\n")
+    else if (s == "I\n")
     {
-      available_users.erase(userID);
+      active_users.erase(userID);
       bool f = indivisualMode(consockfd);
+      active_users.insert(userID);
       if (f == 0)
       {
-        string closingMsg = "Socket has been closed.\n";
-        sendMessage(consockfd, closingMsg);
-        close(consockfd);
-        pthread_exit(NULL);
+        closeSocket(consockfd);
       }
       else
       {
-        available_users.insert(userID);
         sendMessage(consockfd, instructionMsg);
       }
     }
     else if (s == "G\n")
     {
-      available_users.erase(userID);
-      bool f = groupMode(consockfd);
-      if (f == 0)
-      {
-        string closingMsg = "Socket has been closed.\n";
-        sendMessage(consockfd, closingMsg);
-        closeSocket(consockfd);
-      }
-      else
-      {
-        available_users.insert(userID);
-        sendMessage(consockfd, instructionMsg);
-      }
+      active_users.erase(userID);
+      groupMode(consockfd);
+      active_users.insert(userID);
+      sendMessage(consockfd, instructionMsg);
     }
     else if (s == "A\n")
     {
-      available_users.erase(userID);
+      active_users.erase(userID);
       bool f = adminMode(consockfd);
+      active_users.insert(userID);
       if (f == 0)
       {
-        string closingMsg = "Socket has been closed.\n";
-        sendMessage(consockfd, closingMsg);
         closeSocket(consockfd);
       }
       else
       {
-        available_users.insert(userID);
         sendMessage(consockfd, instructionMsg);
       }
     }
@@ -387,11 +816,8 @@ int main()
   serv_addr.sin_addr.s_addr = INADDR_ANY;
   serv_addr.sin_port        = htons(portno);
 
-  // Server protocol
-  /* Create Socket to receive requests*/
   lstnsockfd = socket(AF_INET, SOCK_STREAM, 0);
 
-  /* Bind socket to port */
   bind(lstnsockfd, (struct sockaddr *)&serv_addr,sizeof(serv_addr));
   printf("Bounded to port\n");
 
@@ -399,20 +825,16 @@ int main()
   int tcounter = 0;
   printf("Listening for incoming connections\n");
 
-  signal(SIGUSR1, SIGhandler);
+  signal(SIGUSR1, CollabHandler);
+  signal(SIGUSR2, MessageHandler);
 
-  while (1) {
-
-    /* Listen for incoming connections */
+  while (1) 
+  {
     listen(lstnsockfd, MAXQUEUE); 
 
-    //clilen = sizeof(cl_addr);
-
-    /* Accept incoming connection, obtaining a new socket for it */
     int newsocketfd = accept(lstnsockfd, (struct sockaddr *) &cli_addr, &clilen);
 
     pthread_create(&tid[tcounter], NULL, server, &newsocketfd);
-      // cout << "Failed to Create a Thread\n";
 
     tcounter++;
 
@@ -426,9 +848,6 @@ int main()
       tcounter = 0;
     }
     printf("Accepted connection\n");
-
-
-    // close(consockfd);/
   }
   close(lstnsockfd);
 }

@@ -10,30 +10,83 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <pthread.h>
+#include <iostream>
 
 #define MAXIN 20
+#define MAXSE 36
 #define MAXOUT 1024
+
+using namespace std;
 
 int sockfd;
 
 pthread_t wId, rId;
 
-char *getreq(char *inbuf, int len) 
+void getreq(char *inbuf, int len) 
 {
-  memset(inbuf,0,len);
-  return fgets(inbuf,len,stdin);
+  // printf("%s: ", "REQ");
+  memset(inbuf, 0 ,len);
+  fgets(inbuf,len,stdin);
 }
 
-char *makeHeader(char typeOfMsg[12], char lenOfPayload[4])
+string makeHeader(char lenOfPayload[4], char payload[MAXIN])
 {
-  char header[16];
-  strcpy(header, typeOfMsg);
-  strcat(header, lenOfPayload);
+  if (payload[0] == '\n')
+    return "";
 
-  return header;
+  string sndbuf = "";
+  if (payload[0] == '@')
+  {
+    int x = 1;
+    for (int i = 0; i < 12; i++)
+    {
+      if (payload[x] != ':')
+      {
+        sndbuf += payload[i + 1];
+        x++;
+      }
+      else
+        sndbuf += 'X';
+    }
+
+    string temp = lenOfPayload;
+    sndbuf += temp;
+
+    for (int i = strlen(lenOfPayload); i < 4; i++)
+    {
+      sndbuf += 'X';
+    }
+
+    x++;
+    for (int i = 16; i < MAXSE; i++)
+    {
+      if (x < strlen(payload))
+        sndbuf += payload[x++];
+      else
+        sndbuf += 'X';
+    }
+
+    return sndbuf;
+  }
+  else
+  {
+    sndbuf = "responseXXXX";
+    string temp = lenOfPayload;
+    sndbuf += temp;
+
+    for (int i = strlen(lenOfPayload); i < 4; i++)
+    {
+      sndbuf += 'X';
+    }
+
+    sndbuf += payload;
+    sndbuf += 'X';
+    
+    return sndbuf;
+  }
 }
 
-void* displayMessage() 
+void* displayMessage(void*) 
 {
   rId = pthread_self();
 
@@ -42,7 +95,7 @@ void* displayMessage()
   while (1) 
   {
     memset(rcvbuf,0,MAXOUT);               /* clear */
-    n = read(sockfd, rcvbuf, MAXOUT-1);  
+    n = read(sockfd, rcvbuf, MAXOUT - 1);  
 
     if (n <= 0)
       return  NULL;
@@ -53,16 +106,34 @@ void* displayMessage()
   return NULL;
 }
 
+void sendMessage(int fd, string s)
+{
+  if (s == "")
+    return;
+
+  char* arr = new char[s.size() + 1];
+  strcpy(arr, s.c_str());
+  write(fd, arr, strlen(arr));
+  delete[] arr;
+}
+
 void* readAndSendData()
 {
   wId = pthread_self();
 
   int n;
-  char sndbuf[MAXIN];
+  char payload[MAXIN];
+  char tempbuf[MAXIN];
   while (1)
   {
-    getreq(sndbuf, MAXIN);
-    n = write(sockfd, sndbuf, strlen(sndbuf));
+    memset(payload, 0, MAXIN);
+    getreq(payload, MAXIN);
+
+    char sizeP[4];
+    sprintf(sizeP, "%d", (int)strlen(payload));
+    string sndbuf = makeHeader(sizeP, payload);
+
+    sendMessage(sockfd, sndbuf);
 
     if (n <= 0)
       return NULL;
@@ -71,7 +142,7 @@ void* readAndSendData()
 
 void initialConnect(char userID[12])
 {
-  char sendID[] = "myId";
+  char sendID[MAXIN] = "myId";
   int size = strlen(userID);
   char sizeID[4];
   sprintf(sizeID,"%d", size);
@@ -90,21 +161,25 @@ void initialConnect(char userID[12])
       sendID[i] = 'X';
   }
 
+
   int n = write(sockfd, sendID, strlen(sendID));
+  // printf("%s\n", sendID);
 
   pthread_t rThread, wThread;
 
   pthread_create(&rThread, NULL, displayMessage, NULL);
-  pthread_create(&wThread, NULL, readAndSendData, NULL);
+  readAndSendData();
+  // pthread_create(&wThread, NULL, readAndSendData, NULL);
 
   pthread_join(rThread, NULL);
-  pthread_join(wThread, NULL);
+  // pthread_join(wThread, NULL);
 }
 
 void closeHandler(int sig)
 {
-  char msg[] = "CLOSE";
-  int n = write(sockfd, msg, strlen(msg));
+  string s = "responseXXXX5XXXCLOSINGX";
+
+  sendMessage(sockfd, s);
   
   if (pthread_self() == rId)
   {
@@ -135,7 +210,7 @@ int main()
 {
   signal(SIGINT, closeHandler);
 	//Client protocol
-	char *serverIP = "35.240.152.28";
+	char serverIP[] = "35.240.152.28";
 	int portno = 5033;
 	struct sockaddr_in serv_addr;
 	
@@ -149,6 +224,7 @@ int main()
 	// printf("Connected to %s:%d\n",serverIP, portno);
 
   char userID[12];
+  printf("%s: ", "Enter Name");
   scanf("%s", userID);
 
 	/* Carry out Client-Server protocol */
