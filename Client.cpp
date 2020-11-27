@@ -80,6 +80,11 @@ string makeHeader(char lenOfPayload[4], char payload[MAXIN])
     }
 
     sndbuf += payload;
+
+    if (snd.back() == '\n')
+    {
+      sndbuf.pop_back();
+    }
     sndbuf += 'X';
     
     return sndbuf;
@@ -116,6 +121,7 @@ void sendMessage(int fd, string s)
   write(fd, arr, strlen(arr));
   delete[] arr;
 }
+
 
 void* readAndSendData()
 {
@@ -230,5 +236,5 @@ int main()
 	/* Carry out Client-Server protocol */
   initialConnect(userID);
 	/* Clean up on termination */
-	close(sockfd);
+	// close(sockfd);
 }

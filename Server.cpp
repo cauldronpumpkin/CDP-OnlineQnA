@@ -41,7 +41,7 @@ unordered_map<string, pthread_t> user_threads;
 unordered_set<string> active_users;
 unordered_set<string> available_users;
 
-void sendMessage(int fd, string s)
+void sendMessage(int &fd, string s)
 {
   char* arr = new char[s.size() + 1];
   strcpy(arr, s.c_str());
@@ -176,7 +176,6 @@ void CollabHandler(int sig)
 
     sendMessage(fd, common_message_map[pthread_self()]);
     common_message_map[pthread_self()] = "";
-    // pthread_cond_signal(&cond_map[pthread_self()]);
 
     while (common_message_map[pthread_self()] == "")
     {
@@ -498,14 +497,14 @@ bool adminMode(int &fd)
 
 bool groupMode(int &fd)
 {
-  if (active_users.size() == 0)
+  if (available_users.size() == 0)
   {
     sendMessage(fd, "No active Users.\n");
     return 1;
   }
 
   string res = "Active Users are: ";
-  for (auto itr = active_users.begin(); itr != active_users.end(); itr++)
+  for (auto itr = available_users.begin(); itr != available_users.end(); itr++)
   {
     res += *itr + ",";
   }
@@ -546,7 +545,6 @@ bool groupMode(int &fd)
 
   if (active_users.find(usr) != active_users.end())
   {
-    // pthread_mutex_mLock(&mLock);
     requesting_user_map[other_usr_thread_id] = thread_users[pthread_self()];
     cond_map[other_usr_thread_id] = PTHREAD_COND_INITIALIZER;
     pthread_kill(user_threads[usr], SIGUSR1);
@@ -569,8 +567,6 @@ bool groupMode(int &fd)
   sendMessage(fd, question_topics);
   while(1)
   {
-    // pthread_cond_signal(&cond_map[other_usr_thread_id]);
-
     memset(reqbuf,0, MAXREQ);
     n = read(fd, reqbuf, MAXREQ - 1);
     Question *ques;
@@ -733,9 +729,9 @@ void* server(void* fd)
 
     else if (s == "I\n")
     {
-      active_users.erase(userID);
+      available_users.erase(userID);
       bool f = indivisualMode(consockfd);
-      active_users.insert(userID);
+      available_users.insert(userID);
       if (f == 0)
       {
         closeSocket(consockfd);
@@ -747,16 +743,16 @@ void* server(void* fd)
     }
     else if (s == "G\n")
     {
-      active_users.erase(userID);
+      available_users.erase(userID);
       groupMode(consockfd);
-      active_users.insert(userID);
+      available_users.insert(userID);
       sendMessage(consockfd, instructionMsg);
     }
     else if (s == "A\n")
     {
-      active_users.erase(userID);
+      available_users.erase(userID);
       bool f = adminMode(consockfd);
-      active_users.insert(userID);
+      available_users.insert(userID);
       if (f == 0)
       {
         closeSocket(consockfd);
